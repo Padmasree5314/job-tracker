@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Tracker</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --text:#1c1f2a; --muted:#6b7280; --accent:#4f46e5; --border:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12141c; --card:#1b1e29; --text:#e8eaf0; --muted:#9aa1b2; --accent:#818cf8; --border:#2c3040; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 1.4rem; display:flex; justify-content:space-between; align-items:center; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
+  input, select, textarea, button { font:inherit; padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  button { background:var(--accent); color:#fff; border:none; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .row > * { flex:1 1 140px; }
+  .stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap:8px; }
+  .stat { text-align:center; } .stat b { font-size:1.5rem; display:block; }
+  .item { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 0; border-top:1px solid var(--border); }
+  .item small { color:var(--muted); }
+  .msg { color:#dc2626; min-height:1.2em; font-size:.9rem; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <section id="auth" class="card">
+    <h1>Job Tracker</h1>
+    <div class="row">
+      <input id="email" type="email" placeholder="Email" autocomplete="email">
+      <input id="password" type="password" placeholder="Password (8+ chars)" autocomplete="current-password">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="loginBtn">Log in</button>
+      <button id="registerBtn" class="ghost">Create account</button>
+    </div>
+    <p id="authMsg" class="msg"></p>
+  </section>
+
+  <section id="app" class="hidden">
+    <h1>My Applications <button id="logout" class="ghost">Log out</button></h1>
+    <div id="stats" class="card stats"></div>
+
+    <form id="addForm" class="card">
+      <div class="row">
+        <input name="company" placeholder="Company" required>
+        <input name="role" placeholder="Role" required>
+        <select name="status"></select>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input name="link" placeholder="Job link (optional)">
+        <input name="notes" placeholder="Notes (optional)">
+        <button type="submit">Add</button>
+      </div>
+      <p id="formMsg" class="msg"></p>
+    </form>
+
+    <div class="card">
+      <div class="row">
+        <input id="search" placeholder="Search company or role">
+        <select id="filter"><option value="">All statuses</option></select>
+      </div>
+      <div id="list"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const STATUSES = ['Applied', 'Online Assessment', 'Interview', 'Offer', 'Rejected'];
+const $ = (id) => document.getElementById(id);
+let token = null;
+try { token = localStorage.getItem('token'); } catch {}
+
+async function api(path, options = {}) {
+  const res = await fetch('/api' + path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+  });
+  if (res.status === 401 && token) { logout(); throw new Error('Session expired, please log in again'); }
+  const body = res.status === 204 ? null : await res.json();
+  if (!res.ok) throw new Error(body.error || (body.errors || []).join(', ') || 'Request failed');
+  return body;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+function show() {
+  $('auth').classList.toggle('hidden', !!token);
+  $('app').classList.toggle('hidden', !token);
+  if (token) refresh();
+}
+
+function logout() {
+  token = null;
+  try { localStorage.removeItem('token'); } catch {}
+  show();
+}
+
+async function authenticate(kind) {
+  $('authMsg').textContent = '';
+  try {
+    const creds = { email: $('email').value, password: $('password').value };
+    if (kind === 'register') await api('/auth/register', { method: 'POST', body: JSON.stringify(creds) });
+    const { token: t } = await api('/auth/login', { method: 'POST', body: JSON.stringify(creds) });
+    token = t;
+    try { localStorage.setItem('token', t); } catch {}
+    show();
+  } catch (e) { $('authMsg').textContent = e.message; }
+}
+
+async function refresh() {
+  const params = new URLSearchParams();
+  if ($('search').value) params.set('q', $('search').value);
+  if ($('filter').value) params.set('status', $('filter').value);
+  try {
+    const [apps, stats] = await Promise.all([api('/applications?' + params), api('/applications/stats')]);
+    $('stats').innerHTML =
+      `<div class="stat"><b>${stats.total}</b>Total</div>` +
+      STATUSES.map((s) => `<div class="stat"><b>${stats.byStatus[s]}</b>${s}</div>`).join('');
+    $('list').innerHTML = apps.length ? apps.map((a) => `
+      <div class="item">
+        <div><strong>${esc(a.company)}</strong> — ${esc(a.role)}<br>
+          <small>${esc(a.applied_date)}${a.notes ? ' · ' + esc(a.notes) : ''}</small></div>
+        <div class="row" style="flex:0 0 auto">
+          <select data-id="${a.id}" class="statusSel">
+            ${STATUSES.map((s) => `<option ${s === a.status ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+          <button class="ghost delBtn" data-id="${a.id}">Delete</button>
+        </div>
+      </div>`).join('') : '<p class="msg" style="color:var(--muted)">No applications yet.</p>';
+  } catch (e) { /* session handling done in api() */ }
+}
+
+$('loginBtn').onclick = () => authenticate('login');
+$('registerBtn').onclick = () => authenticate('register');
+$('logout').onclick = logout;
+$('search').oninput = refresh;
+$('filter').onchange = refresh;
+
+document.querySelector('[name=status]').innerHTML = STATUSES.map((s) => `<option>${s}</option>`).join('');
+$('filter').innerHTML += STATUSES.map((s) => `<option>${s}</option>`).join('');
+
+$('addForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('formMsg').textContent = '';
+  const data = Object.fromEntries(new FormData(e.target));
+  Object.keys(data).forEach((k) => data[k] === '' && delete data[k]);
+  try {
+    await api('/applications', { method: 'POST', body: JSON.stringify(data) });
+    e.target.reset();
+    refresh();
+  } catch (err) { $('formMsg').textContent = err.message; }
+};
+
+$('list').onchange = async (e) => {
+  if (e.target.classList.contains('statusSel')) {
+    await api('/applications/' + e.target.dataset.id, { method: 'PUT', body: JSON.stringify({ status: e.target.value }) });
+    refresh();
+  }
+};
+$('list').onclick = async (e) => {
+  if (e.target.classList.contains('delBtn')) {
+    await api('/applications/' + e.target.dataset.id, { method: 'DELETE' });
+    refresh();
+  }
+};
+
+show();
+</script>
+</body>
+</html>
